@@ -6,6 +6,7 @@
 #   - Multi‑threading for speed
 #   - Flask keep‑alive for Render.com
 #   - Auto‑retry & logging
+#   - Python 3.12+ compatible
 # ============================================================
 
 import requests
@@ -14,6 +15,7 @@ import time
 import random
 import threading
 import logging
+import asyncio
 from queue import Queue
 from bs4 import BeautifulSoup
 from flask import Flask
@@ -32,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ------------------------------
 # CONFIGURATION
 # ------------------------------
-BOT_TOKEN = "8337001479:AAGPsETwLD2LSi-MX9g9-XMUdJVDNDd6y0s"          # <-- REPLACE WITH YOUR TOKEN
+BOT_TOKEN = "8337001479:AAGPsETwLD2LSi-MX9g9-XMUdJVDNDd6y0s"          # <-- REPLACE WITH YOUR NEW TOKEN AFTER REVOKING
 PHONE_PREFIX = "91"                         # India
 MAX_THREADS = 5
 LINK_SAVE_FILE = "gemini_links.txt"
@@ -320,5 +322,13 @@ def main():
     logger.info("[+] Bot running with FREE proxy rotation + SMS rotation + Flask keep‑alive")
     application.run_polling()
 
+# ------------------------------
+# ENTRY POINT WITH EVENT LOOP FIX
+# ------------------------------
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(main())
+    else:
+        main()
