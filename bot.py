@@ -1,116 +1,38 @@
-# ============================================================
-# GEMINI 18‑MONTH JIO LINK GENERATOR BOT
-# Fully working with:
-#   - 10+ free SMS sites (rotating)
-#   - Free proxy rotation + fallback
-#   - Multi‑threading for speed
-#   - Flask keep‑alive for Render.com
-#   - Auto‑retry & logging
-#   - Python 3.12+ compatible
-# ============================================================
-
+from flask import Flask, request, jsonify
 import requests
 import re
 import time
 import random
-import threading
 import logging
-import asyncio
-from queue import Queue
 from bs4 import BeautifulSoup
-from flask import Flask
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-
-# ------------------------------
-# LOGGING
-# ------------------------------
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
 
 # ------------------------------
 # CONFIGURATION
 # ------------------------------
-BOT_TOKEN = "8337001479:AAGPsETwLD2LSi-MX9g9-XMUdJVDNDd6y0s"          # <-- REPLACE WITH YOUR NEW TOKEN AFTER REVOKING
-PHONE_PREFIX = "91"                         # India
-MAX_THREADS = 5
+BOT_TOKEN = "8337001479:AAGPsETwLD2LSi-MX9g9-XMUdJVDNDd6y0s"  # REPLACE WITH YOUR NEW TOKEN
+PHONE_PREFIX = "91"
 LINK_SAVE_FILE = "gemini_links.txt"
-PROXY_REFRESH_INTERVAL = 300                # seconds
 
 # ------------------------------
-# FLASK KEEP‑ALIVE (for Render.com)
+# LOGGING
+# ------------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ------------------------------
+# FLASK APP
 # ------------------------------
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "🤖 Gemini Bot is running!"
-
-def run_flask():
-    app.run(host='0.0.0.0', port=10000)
-
-# Start Flask in a background thread
-threading.Thread(target=run_flask, daemon=True).start()
-
 # ------------------------------
-# FREE PROXY SCRAPER
+# TELEGRAM WEBHOOK SETUP
 # ------------------------------
-proxy_pool = []
-last_proxy_refresh = 0
+WEBHOOK_URL = "https://gemini-bot1.onrender.com/webhook"  # REPLACE WITH YOUR RENDER URL
 
-def get_free_proxies():
-    try:
-        url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all"
-        resp = requests.get(url, timeout=10)
-        proxies = resp.text.strip().split('\n')
-        valid = [p.strip() for p in proxies if p.strip() and ':' in p]
-        logger.info(f"[PROXY] Scraped {len(valid)} proxies")
-        return valid
-    except Exception as e:
-        logger.warning(f"[PROXY] Scrape failed: {e}")
-        return []
-
-def get_random_proxy():
-    global proxy_pool, last_proxy_refresh
-    if time.time() - last_proxy_refresh > PROXY_REFRESH_INTERVAL or not proxy_pool:
-        proxy_pool = get_free_proxies()
-        last_proxy_refresh = time.time()
-        if not proxy_pool:
-            logger.warning("[PROXY] No proxies available, using direct connection")
-            return None
-    proxy_str = random.choice(proxy_pool)
-    return {"http": f"http://{proxy_str}", "https": f"http://{proxy_str}"}
-
-# ------------------------------
-# REQUEST WITH PROXY + RETRY
-# ------------------------------
-def make_request(url, method="GET", json=None, headers=None, retries=3):
-    for attempt in range(retries):
-        proxy = get_random_proxy()
-        try:
-            if method.upper() == "POST":
-                resp = requests.post(url, json=json, headers=headers, proxies=proxy, timeout=20)
-            else:
-                resp = requests.get(url, headers=headers, proxies=proxy, timeout=20)
-            if resp.status_code == 200:
-                return resp
-            logger.warning(f"[REQUEST] Status {resp.status_code} with proxy {proxy}, retrying...")
-        except Exception as e:
-            logger.warning(f"[REQUEST] Proxy failed: {e}, trying without proxy...")
-            try:
-                if method.upper() == "POST":
-                    resp = requests.post(url, json=json, headers=headers, timeout=20)
-                else:
-                    resp = requests.get(url, headers=headers, timeout=20)
-                if resp.status_code == 200:
-                    return resp
-            except:
-                pass
-        time.sleep(1)
-    return None
+def set_webhook():
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+    response = requests.post(url, json={"url": WEBHOOK_URL})
+    logger.info(f"Webhook set: {response.json()}")
 
 # ------------------------------
 # SMS SITES (10+ FREE)
@@ -133,9 +55,7 @@ SMS_SITES = [
 # ------------------------------
 def get_phone_from_site(site):
     try:
-        resp = make_request(site["url"], method="GET")
-        if not resp:
-            return None
+        resp = requests.get(site["url"], timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
         elements = soup.select(site["number_selector"])
         for el in elements:
@@ -151,9 +71,7 @@ def get_phone_from_site(site):
 def get_otp_from_site(site, phone_number):
     try:
         url = f"{site['url']}/phone/{phone_number}" if 'phone' in site['url'] else f"{site['url']}/number/{phone_number}"
-        resp = make_request(url, method="GET")
-        if not resp:
-            return None
+        resp = requests.get(url, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
         messages = soup.select(site["message_selector"])
         for msg in messages:
@@ -170,12 +88,9 @@ def get_otp_from_site(site, phone_number):
 def get_free_phone_number():
     shuffled = random.sample(SMS_SITES, len(SMS_SITES))
     for site in shuffled:
-        logger.info(f"[TRY] Getting number from: {site['name']}")
         phone = get_phone_from_site(site)
         if phone:
-            logger.info(f"[SUCCESS] Number {phone} from {site['name']}")
             return phone, site
-        logger.warning(f"[FAIL] No number from {site['name']}, trying next...")
     return None, None
 
 def get_otp_with_fallback(phone_number, max_attempts=15):
@@ -183,7 +98,6 @@ def get_otp_with_fallback(phone_number, max_attempts=15):
         for site in random.sample(SMS_SITES, len(SMS_SITES)):
             otp = get_otp_from_site(site, phone_number)
             if otp:
-                logger.info(f"[OTP SUCCESS] Found OTP: {otp} on {site['name']} (attempt {attempt+1})")
                 return otp
         time.sleep(3)
     return None
@@ -199,10 +113,11 @@ def request_otp(phone_number, device_id):
         "Content-Type": "application/json"
     }
     payload = {"phone": f"+{PHONE_PREFIX}{phone_number}", "device_id": device_id, "source": "jio_gemini_offer"}
-    resp = make_request(url, method="POST", json=payload, headers=headers)
-    if resp:
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=20)
         return resp.json()
-    return {"status": "error", "message": "Request failed"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 def verify_otp(phone_number, otp, device_id):
     url = "https://serviceactivation.google.com/subscription/verify_otp"
@@ -212,123 +127,93 @@ def verify_otp(phone_number, otp, device_id):
         "Content-Type": "application/json"
     }
     payload = {"phone": f"+{PHONE_PREFIX}{phone_number}", "otp": otp, "device_id": device_id}
-    resp = make_request(url, method="POST", json=payload, headers=headers)
-    if resp:
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=20)
         data = resp.json()
         return data.get("activation_url")
-    return None
+    except Exception:
+        return None
 
 # ------------------------------
-# SINGLE LINK GENERATOR
+# GENERATE LINK
 # ------------------------------
 def generate_free_link():
     device_id = ''.join(random.choices('0123456789abcdef', k=16))
-    logger.info(f"[Device] {device_id}")
-
     phone, used_site = get_free_phone_number()
     if not phone:
-        return "❌ No free phone number available from any SMS site. Try again later."
-
-    logger.info(f"[Phone] +{PHONE_PREFIX}{phone} (from {used_site['name']})")
+        return "❌ No free phone number available."
 
     otp_resp = request_otp(phone, device_id)
     if otp_resp.get("status") != "otp_sent":
         return f"❌ OTP request failed: {otp_resp.get('message', 'Unknown error')}"
 
-    logger.info("[OTP] Waiting for OTP to arrive...")
     otp = get_otp_with_fallback(phone)
     if not otp:
-        return "❌ OTP not found on any SMS site after multiple attempts. Try another number."
+        return "❌ OTP not found."
 
     link = verify_otp(phone, otp, device_id)
     if link:
         with open(LINK_SAVE_FILE, "a") as f:
             f.write(link + "\n")
-        return f"✅ **LINK FOUND!**\n\n`{link}`\n\n📱 Phone: +{PHONE_PREFIX}{phone}\n🔐 OTP: {otp}"
+        return f"✅ LINK FOUND!\n\n{link}\n\nPhone: +{PHONE_PREFIX}{phone}\nOTP: {otp}"
     else:
-        return "❌ OTP verification failed. The link may be expired or invalid."
+        return "❌ Verification failed."
 
 # ------------------------------
-# MULTI‑THREAD GENERATOR
+# TELEGRAM WEBHOOK HANDLER
 # ------------------------------
-def generate_links(count):
-    results = []
-    for i in range(min(count, MAX_THREADS)):
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.get_json()
+    if not data or 'message' not in data:
+        return 'OK', 200
+
+    chat_id = data['message']['chat']['id']
+    text = data['message'].get('text', '')
+
+    if text == '/start':
+        send_message(chat_id, "🤖 Gemini Link Generator\n\nSend /generate to get a link.")
+    elif text == '/generate':
+        msg = send_message(chat_id, "⏳ Generating link...")
         result = generate_free_link()
-        results.append(f"Thread {i+1}: {result}")
-        time.sleep(1)
-    return results
-
-# ------------------------------
-# TELEGRAM BOT COMMANDS
-# ------------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 *Gemini Link Generator v3 – Free Proxy + SMS Rotation*\n\n"
-        "✅ Rotates through 10+ SMS sites\n"
-        "✅ Rotates through free proxies\n"
-        "✅ Auto‑fallback to direct connection\n\n"
-        "Send /generate to get a link.\n"
-        "Send /generate 5 to get 5 links.\n"
-        "Send /status to see total links.\n"
-        "Send /export to download all links.",
-        parse_mode="Markdown"
-    )
-
-async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    count = 1
-    if context.args:
+        send_message(chat_id, result)
+    elif text == '/status':
         try:
-            count = int(context.args[0])
-            if count < 1 or count > 20:
-                count = 1
-        except ValueError:
-            count = 1
+            with open(LINK_SAVE_FILE, "r") as f:
+                count = len(f.readlines())
+            send_message(chat_id, f"📊 Total links: {count}")
+        except:
+            send_message(chat_id, "📊 No links yet.")
+    elif text == '/export':
+        try:
+            with open(LINK_SAVE_FILE, "rb") as f:
+                files = {'document': f}
+                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", data={'chat_id': chat_id}, files=files)
+        except:
+            send_message(chat_id, "❌ No links file found.")
+    else:
+        send_message(chat_id, "Unknown command. Use /start, /generate, /status, /export")
 
-    msg = await update.message.reply_text(f"⏳ Generating {count} link(s)... This may take 1–3 minutes.")
-    results = generate_links(count)
-
-    output = f"✅ **Generated {len(results)} link(s)**\n\n"
-    for res in results:
-        output += f"• {res}\n\n"
-
-    await msg.edit_text(output, parse_mode="Markdown")
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        with open(LINK_SAVE_FILE, "r") as f:
-            count = len(f.readlines())
-        await update.message.reply_text(f"📊 Total links generated: **{count}**")
-    except FileNotFoundError:
-        await update.message.reply_text("📊 No links yet. Send /generate.")
-
-async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        with open(LINK_SAVE_FILE, "rb") as f:
-            await update.message.reply_document(document=f, filename=LINK_SAVE_FILE)
-    except FileNotFoundError:
-        await update.message.reply_text("❌ No links file found.")
+    return 'OK', 200
 
 # ------------------------------
-# MAIN
+# HELPERS
 # ------------------------------
-def main():
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("generate", generate))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("export", export))
-
-    logger.info("[+] Bot running with FREE proxy rotation + SMS rotation + Flask keep‑alive")
-    application.run_polling()
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    return requests.post(url, json=payload).json()
 
 # ------------------------------
-# ENTRY POINT WITH EVENT LOOP FIX
+# HOME
+# ------------------------------
+@app.route('/')
+def home():
+    return "🤖 Gemini Bot is running!"
+
+# ------------------------------
+# START
 # ------------------------------
 if __name__ == "__main__":
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        asyncio.run(main())
-    else:
-        main()
+    set_webhook()
+    app.run(host='0.0.0.0', port=10000)
